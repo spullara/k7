@@ -1,0 +1,2 @@
+- `k7` is the .deb package containing the CLI and API, aimed to be used on the node(s), installable with `apt get`.
+- `katakate` is the PyPI package containing the Python SDK, aimed to be used remotely e.g. from local, installable with `pip install katakate`. The SDK client talks to the API deployed on the node.

@@ -1,0 +1,20 @@
+k7 (0.0.3) noble; urgency=medium
+
+  * Fix Docker image name to use lowercase (ghcr.io/katakate/k7-api)
+
+ -- root <root@Ubuntu-2404-noble-amd64-base>  Sun, 28 Sep 2025 23:52:10 +0200
+
+k7 (0.0.2) noble; urgency=medium
+
+  * Fix Kata Containers download to support both .tar.zst and .tar.xz
+    formats
+
+ -- root <root@Ubuntu-2404-noble-amd64-base>  Sun, 28 Sep 2025 23:02:04 +0200
+
+k7 (0.0.1) noble; urgency=medium
+
+  * Initial packaging for PPA builds.
+
+ -- K7 Team <hi@katakate.org>  Mon, 22 Sep 2025 00:00:00 +0000
+
+

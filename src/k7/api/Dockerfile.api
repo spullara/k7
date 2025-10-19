@@ -1,0 +1,29 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm AS build
+WORKDIR /app
+
+# Copy requirements and full k7 package from repo-root context (src/ layout)
+COPY src/k7/api/requirements.txt ./requirements.txt
+COPY src/k7/ ./k7/
+
+RUN uv venv /app/.venv && \
+    . /app/.venv/bin/activate && \
+    uv pip install --no-cache -r requirements.txt
+
+FROM python:3.12-slim AS runtime
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app"
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/.venv /app/.venv
+COPY --from=build /app/k7 /app/k7
+
+RUN useradd -m -u 1000 k7user && chown -R k7user:k7user /app
+USER k7user
+
+EXPOSE 8000
+CMD ["uvicorn", "k7.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

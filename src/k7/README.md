@@ -1,0 +1,1 @@
+Both the API in `api/` and the CLI in `cli/` use the shared core logic in `core/`. The node installation and configuration is handled by the Ansible playbook in `deploy/` and this is what is used when running `k7 install`. 

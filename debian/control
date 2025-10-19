@@ -1,0 +1,29 @@
+Source: k7
+Section: utils
+Priority: optional
+Maintainer: K7 Team <hi@katakate.org>
+Build-Depends: debhelper-compat (= 13),
+ dh-python,
+ python3,
+ python3-dev,
+ nuitka,
+ patchelf,
+ python3-typer,
+ python3-kubernetes,
+ python3-dotenv,
+ python3-yaml,
+ python3-rich
+Standards-Version: 4.6.2
+Homepage: https://katakate.org
+Rules-Requires-Root: no
+
+Package: k7
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: docker.io, docker-compose-plugin, kubectl | k3s, ansible
+Description: K7 CLI for sandbox management
+ Provides the `k7` command with embedded installer playbook.
+
+
+
+

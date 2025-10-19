@@ -1,0 +1,14 @@
+extend-diff-ignore = "(^|/)(\.venv(|-.*)/|venv(|-.*)/|k7\.build/|k7\.dist/|k7\.onefile-build/|dist/|build/).*"
+tar-ignore = .git
+tar-ignore = .venv
+tar-ignore = .venv-*
+tar-ignore = .venv-build
+tar-ignore = .venv-k7sdk
+tar-ignore = venv
+tar-ignore = venv-*
+tar-ignore = k7.build
+tar-ignore = k7.dist
+tar-ignore = k7.onefile-build
+tar-ignore = dist
+tar-ignore = build
+

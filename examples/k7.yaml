@@ -1,0 +1,10 @@
+name: demo
+image: alpine:3.20
+namespace: default
+limits:
+  cpu: "100m"
+  memory: "128Mi"
+before_script: |
+  # Installing curl. Egress open during before_script, then restricted (empty whitelist) afterwards
+  apk add curl
+egress_whitelist: []

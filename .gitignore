@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+.env
+
+# Build artifacts
+dist/
+build/
+*.egg
+*.deb
+
+# Debian packaging artifacts
+*.buildinfo
+*.changes
+*.dsc
+*.tar.xz
+*.tar.gz
+*.build
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/k7.substvars
+
+# Nuitka artifacts
+*.onefile-build/
+.nuitka-cache/
+
+# Local tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Work directories (ignore any 'work' dir at any depth)
+**/work/**
+debian/prebuilt/
+
+# macOS metadata
+**/.DS_Store

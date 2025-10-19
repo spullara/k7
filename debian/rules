@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	mkdir -p dist
+	if [ -f debian/prebuilt/k7 ]; then \
+		echo "Using prebuilt debian/prebuilt/k7"; \
+		cp debian/prebuilt/k7 dist/k7; \
+		chmod 0755 dist/k7; \
+	elif [ -f dist/k7 ]; then \
+		echo "Using prebuilt dist/k7"; \
+		chmod 0755 dist/k7; \
+	else \
+		if command -v docker >/dev/null 2>&1; then \
+			echo "Building k7 binary via Docker (src/k7/cli/Dockerfile.cli)..."; \
+			docker build --platform=linux/amd64 -t k7-cli-builder -f src/k7/cli/Dockerfile.cli .; \
+			cid=$$(docker create --platform=linux/amd64 k7-cli-builder); \
+			docker cp "$$cid":/app/k7.bin ./dist/k7 || docker cp "$$cid":/app/k7.cli.bin ./dist/k7; \
+			docker rm -v "$$cid" >/dev/null; \
+			chmod 0755 dist/k7; \
+		else \
+			echo "Docker not available; building via local Nuitka..."; \
+			python3 -m nuitka \
+				--standalone --onefile \
+				--include-module=yaml \
+				--include-module=rich \
+				--include-module=typer \
+				--include-module=kubernetes \
+				--include-module=dotenv \
+				--include-data-dir=src/k7=k7 \
+				src/k7/cli/k7.py; \
+			if [ -f k7.bin ]; then mv k7.bin dist/k7; \
+			elif [ -f k7.cli.bin ]; then mv k7.cli.bin dist/k7; \
+			else echo "Nuitka output not found"; exit 1; fi; \
+			chmod 0755 dist/k7; \
+		fi; \
+	fi
+
+override_dh_auto_clean:
+	rm -rf dist build .nuitka-cache *.build *.dist
+
+override_dh_auto_install:
+	# Use dh_install via debian/k7.install; do not run project Makefile install
+	true
+
+override_dh_strip:
+	# Do not strip the Nuitka onefile; payload is appended to the ELF
+	true
+
+override_dh_dwz:
+	# Do not run dwz on the onefile binary
+	true

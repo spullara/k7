@@ -1,0 +1,757 @@
+
+- name: Provision Bare Metal instance for K7
+  hosts: k7_nodes
+  become: yes
+  vars:
+    target_user: "{{ ansible_user }}"
+    helm_version: "v3.15.2"
+
+  tasks:
+    - name: Gather facts (ensures ansible_distribution_release is available)
+      setup:
+
+    - name: Update apt cache and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        autoremove: yes
+      tags: ['system_update']
+
+    # ---- LVM utilities (needed for pvcreate/vgcreate/lvcreate) ----
+    - name: Install LVM2
+      ansible.builtin.apt:
+        name: lvm2
+        state: present
+      tags: ['lvm']
+
+    # Section: KVM Installation
+    - name: Install required KVM and support utilities
+      ansible.builtin.apt:
+        name:
+          - bridge-utils
+          - cpu-checker
+          - jq
+        state: present
+      tags: ['kvm']
+
+    - name: Check if KVM acceleration can be used
+      ansible.builtin.command: kvm-ok
+      register: kvm_ok_result
+      changed_when: false
+      failed_when: "'KVM acceleration can be used' not in kvm_ok_result.stdout and 'INFO: /dev/kvm exists' not in kvm_ok_result.stdout"
+      tags: ['kvm']
+
+    - name: Ensure KVM modules (generic, Intel, AMD) are configured to load at boot
+      ansible.builtin.lineinfile:
+        path: /etc/modules-load.d/k7-kvm.conf
+        line: "{{ item }}"
+        create: yes
+        mode: '0644'
+      loop:
+        - kvm
+        - kvm_intel
+        - kvm_amd
+        - dm_thin_pool
+      tags: ['kvm']
+
+    - name: Load KVM + device-mapper thin-pool modules
+      ansible.builtin.shell: |
+        for mod in kvm kvm_intel kvm_amd dm_thin_pool; do
+          modprobe "$mod" 2>/dev/null || true
+        done
+      changed_when: false
+      tags: ['kvm']
+
+    - name: Add target user {{ target_user }} to the KVM group
+      ansible.builtin.user:
+        name: "{{ target_user }}"
+        groups: kvm
+        append: yes
+      tags: ['kvm']
+
+    - name: Check /dev/kvm ownership
+      stat:
+        path: /dev/kvm
+      register: kvm_dev
+
+    - name: Fail if /dev/kvm is not owned by kvm group
+      fail:
+        msg: "/dev/kvm must be owned by group 'kvm'. Check system configuration."
+      when:
+      - kvm_dev.stat.exists
+      - kvm_dev.stat.grp is defined
+      - kvm_dev.stat.grp != 'kvm'
+
+    # ---------------------------------------------------------------------------------------
+    # Force iptables/ip6tables legacy backend (slaves follow automatically) (this is for k3s)
+    # ---------------------------------------------------------------------------------------
+    - name: Set iptables master alternative to legacy 
+      command: update-alternatives --set iptables /usr/sbin/iptables-legacy
+      changed_when: "'link group' in result.stdout or result.rc == 0"
+      register: result
+      tags: ['iptables']
+            
+    - name: Set ip6tables master alternative to legacy
+      command: update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+      changed_when: "'link group' in result.stdout or result.rc == 0"
+      register: result
+      tags: ['iptables']
+
+    - name: Ensure xt_mark module loads at boot and now
+      lineinfile:
+        path: /etc/modules-load.d/k7.conf
+        line: xt_mark
+        create: yes
+      notify: Load xt_mark
+      tags: ['iptables']
+
+    - name: Load xt_mark module now
+      command: modprobe xt_mark
+      changed_when: false        # no “changed” output on reruns
+      tags: ['iptables']
+
+
+    # ------------------------------------------------------------------
+    # Ensure the devmapper stanza is absent before first K3s start
+    # ------------------------------------------------------------------
+    - name: Remove devmapper snapshotter block (if present) early
+      blockinfile:
+        path: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+        marker: "# {mark} ANSIBLE MANAGED DEVMAPPER"
+        state: absent
+        create: yes
+      tags: ['devmapper']
+
+    # ------------------------------------------------------------------
+    # Ensure no stale rendered config.toml forces devmapper on first boot
+    # ------------------------------------------------------------------
+    - name: Remove previously rendered containerd config
+      file:
+        path: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+        state: absent
+      tags: ['k3s']
+
+    # ------------------------------------------------------------------
+    # Minimal CNI so containerd’s CRI plugin can start on first boot
+    # ------------------------------------------------------------------
+    - name: Download CNI plugin tarball early
+      get_url:
+        url: https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-amd64-v1.3.0.tgz
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+      tags: ['cni']
+
+    - name: Ensure /opt/cni/bin exists
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: '0755'
+      tags: ['cni']
+
+    - name: Extract CNI plugins early
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: yes
+      tags: ['cni']
+
+    # ─── CNI bootstrap (single-file loopback) ─────────────────────────────
+
+    - name: Wipe CNI conf dirs before first k3s start
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /var/lib/rancher/k3s/agent/etc/cni/net.d   # ← just in case
+      tags: [cni]
+
+    # Recreate the single dir that containerd will read
+    - name: Re-create /etc/cni/net.d directory
+      file:
+        path: /etc/cni/net.d
+        state: directory
+        mode: '0755'
+      tags: [cni]
+
+    # Drop exactly one minimal loop-back config
+    - name: Drop loop-back CNI config
+      copy:
+        dest: /etc/cni/net.d/99-loopback.conf
+        mode: '0644'
+        content: |
+          {
+            "cniVersion": "1.0.0",
+            "name": "loopback",
+            "type": "loopback"
+          }
+      tags: [cni]
+
+    # NEW fix
+    - name: Disable nftables FORWARD rules (they conflict with iptables)
+      shell: |
+        nft flush ruleset || true
+        systemctl mask nftables || true
+      tags: ['network']
+
+    - name: Restart Docker to recreate iptables chains (after switching to legacy / flushing nft)
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+      tags: ['docker','iptables']
+
+    - name: Detect systemd-resolved resolv.conf
+      stat:
+        path: /run/systemd/resolve/resolv.conf
+      register: resolved_resolv
+      tags: ['dns']
+
+    - name: Set k3s resolv.conf path
+      set_fact:
+        k3s_resolv_conf: "{{ resolved_resolv.stat.exists | ternary('/run/systemd/resolve/resolv.conf','/etc/resolv.conf') }}"
+      tags: ['dns']
+
+    - name: Persist iptables FORWARD rules for CNI traffic
+      iptables:
+        chain: FORWARD
+        in_interface: cni0
+        jump: ACCEPT
+        action: insert
+        rule_num: 1
+        state: present
+      tags: ['network']
+
+    - name: Persist iptables FORWARD rules for return CNI traffic
+      iptables:
+        chain: FORWARD
+        out_interface: cni0
+        ctstate: ESTABLISHED,RELATED
+        jump: ACCEPT
+        action: insert
+        rule_num: 1
+        state: present
+      tags: ['network']
+
+
+    - name: Install K3s (but do NOT start it yet)
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true K3S_RESOLV_CONF={{ k3s_resolv_conf }} INSTALL_K3S_EXEC='--disable=traefik --write-kubeconfig-mode 644 --cluster-cidr=10.42.0.0/16 --service-cidr=10.43.0.0/16' sh -
+      args:
+        creates: /usr/local/bin/k3s
+      tags: ['k3s']
+
+    # 📦 Section: Firecracker + Jailer Installation
+    - name: Get latest Firecracker release tag
+      uri:
+        url: https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest
+        return_content: yes
+      register: firecracker_release_info
+      tags: ['firecracker']
+
+    - name: Set Firecracker version
+      set_fact:
+        firecracker_version: "{{ firecracker_release_info.json.tag_name }}"
+      tags: ['firecracker']
+
+    - name: Download Firecracker & Jailer binaries
+      get_url:
+        url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}/firecracker-{{ firecracker_version }}-{{ ansible_architecture }}.tgz"
+        dest: "/tmp/firecracker-{{ firecracker_version }}-{{ ansible_architecture }}.tgz"
+        mode: '0644'
+      tags: ['firecracker']
+
+    - name: Create firecracker bin directory
+      ansible.builtin.file:
+        path: /opt/firecracker
+        state: directory
+        mode: '0755'
+
+    - name: Extract Firecracker release
+      ansible.builtin.unarchive:
+        src: "/tmp/firecracker-{{ firecracker_version }}-{{ ansible_architecture }}.tgz"
+        dest: "/opt/firecracker/"
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+      tags: ['firecracker']
+
+    - name: Find firecracker binary
+      find:
+        paths: /opt/firecracker
+        patterns: "firecracker*"
+        recurse: no
+      register: firecracker_binaries
+
+    - name: Install `file` utility required for lookup('pipe', 'file ...')
+      ansible.builtin.apt:
+        name: file
+        state: present
+      tags: ['utils','firecracker']
+
+    - name: Copy firecracker binary to final path (only if ELF)
+      copy:
+        src: "{{ item.path }}"
+        dest: "/usr/local/bin/firecracker"
+        remote_src: yes
+        mode: '0755'
+      loop: "{{ firecracker_binaries.files }}"
+      when: >
+        'firecracker' in item.path and
+        lookup('pipe', 'file ' ~ item.path) is search('ELF .* executable')
+
+    - name: Find jailer binary
+      find:
+        paths: /opt/firecracker
+        patterns: "jailer*"
+        recurse: no
+      register: jailer_binaries
+
+    - name: Copy jailer binary to final path (only if ELF)
+      copy:
+        src: "{{ item.path }}"
+        dest: "/usr/local/bin/jailer"
+        remote_src: yes
+        mode: '0755'
+      loop: "{{ jailer_binaries.files }}"
+      when: >
+        'jailer' in item.path and
+        lookup('pipe', 'file ' ~ item.path) is search('ELF .* executable')
+
+    - name: Remove bundled Firecracker & jailer
+      file:
+        path: "/opt/kata/bin/{{ item }}"
+        state: absent
+      loop: [firecracker, jailer]
+      tags: ['kata','cleanup','firecracker','jailer']
+
+    - name: Ensure jailer is set‑uid root
+      file:
+        path: /usr/local/bin/jailer
+        mode: '4755'
+        owner: root
+        group: root
+      tags: ['kata','firecracker','jailer']
+
+    - name: Check Firecracker version
+      command: /usr/local/bin/firecracker --version
+      changed_when: false
+      tags: ['firecracker']
+
+    - name: Check Jailer version
+      command: /usr/local/bin/jailer --version
+      changed_when: false
+      tags: ['firecracker','jailer']
+
+    # Section: Install Kata Container
+    - name: Download and install Kata Containers
+      shell: |
+        KATA_VERSION=$(curl -sSL https://api.github.com/repos/kata-containers/kata-containers/releases/latest | jq -r .tag_name)
+        mkdir -p /opt/kata
+        
+        # Try .tar.zst first (newer format)
+        TARBALL_ZST="kata-static-${KATA_VERSION}-amd64.tar.zst"
+        URL_ZST="https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/${TARBALL_ZST}"
+        
+        if curl -fsSL "$URL_ZST" -o "/tmp/$TARBALL_ZST" 2>/dev/null; then
+          echo "Downloaded $TARBALL_ZST, extracting with zstd..."
+          if command -v zstd >/dev/null 2>&1; then
+            zstd -d "/tmp/$TARBALL_ZST" -o "/tmp/kata-static-${KATA_VERSION}-amd64.tar"
+            tar -xvf "/tmp/kata-static-${KATA_VERSION}-amd64.tar" -C /
+          else
+            echo "Installing zstd..."
+            apt-get update && apt-get install -y zstd
+            zstd -d "/tmp/$TARBALL_ZST" -o "/tmp/kata-static-${KATA_VERSION}-amd64.tar"
+            tar -xvf "/tmp/kata-static-${KATA_VERSION}-amd64.tar" -C /
+          fi
+        else
+          # Fallback to .tar.xz (older format)
+          echo "Trying fallback to .tar.xz format..."
+          TARBALL_XZ="kata-static-${KATA_VERSION}-amd64.tar.xz"
+          URL_XZ="https://github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/${TARBALL_XZ}"
+          curl -fsSL "$URL_XZ" -o "/tmp/$TARBALL_XZ"
+          tar -xvf "/tmp/$TARBALL_XZ" -C /
+        fi
+      args:
+        executable: /bin/bash
+      tags: ['kata']
+
+    - name: Point Kata to latest Firecracker / jailer
+      replace:
+        path: /opt/kata/share/defaults/kata-containers/configuration-fc.toml
+        regexp: '^({{ item.key }}\s*=\s*).*'
+        replace: '\1"/usr/local/bin/{{ item.name }}"'
+      loop:
+        - { key: 'path',        name: 'firecracker' }
+        - { key: 'jailer_path', name: 'jailer' }
+      tags: ['kata','config','firecracker','jailer']
+
+
+
+    - name: Set valid_hypervisor_paths
+      lineinfile:
+        path: /opt/kata/share/defaults/kata-containers/configuration-fc.toml
+        regexp: '^valid_hypervisor_paths'
+        line: 'valid_hypervisor_paths = ["/usr/local/bin/firecracker"]'
+      tags: ['kata','config','firecracker']
+
+    - name: Set valid_jailer_paths
+      lineinfile:
+        path: /opt/kata/share/defaults/kata-containers/configuration-fc.toml
+        regexp: '^valid_jailer_paths'
+        line: 'valid_jailer_paths = ["/usr/local/bin/jailer"]'
+      tags: ['kata','config','jailer']
+
+
+    - name: Create containerd shim symlink
+      file:
+        src: "/opt/kata/bin/containerd-shim-kata-v2"
+        dest: "/usr/local/bin/containerd-shim-kata-v2"
+        state: link
+      tags: ['kata', 'containerd']
+
+    - name: Ensure /opt/kata/share/kata-containers exists
+      file:
+        path: /opt/kata/share/kata-containers
+        state: directory
+        mode: '0755'
+      tags: ['kata']
+
+    # ------------------------------------------------------------------
+    # Kata kernel (vmlinux.container)
+    # ------------------------------------------------------------------
+
+    - name: Check if vmlinux.container already exists (provided by kata-static)
+      stat:
+        path: /opt/kata/share/kata-containers/vmlinux.container
+      register: kata_kernel
+      tags: ['kata']
+
+    - name: Get latest Kata Containers release metadata (only if kernel missing)
+      uri:
+        url: https://api.github.com/repos/kata-containers/kata-containers/releases/latest
+        return_content: yes
+      register: kata_release_info
+      when: not kata_kernel.stat.exists
+      tags: ['kata']
+
+    - name: Set URL for vmlinux.container asset (only if kernel missing)
+      set_fact:
+        kata_kernel_url: >-
+          {{
+            kata_release_info.json.assets
+            | selectattr('name', 'equalto', 'vmlinux.container')
+            | map(attribute='browser_download_url')
+            | first | default('')
+          }}
+      when: not kata_kernel.stat.exists
+      tags: ['kata']
+
+    - name: Fail when release has no vmlinux.container asset (only if kernel missing)
+      fail:
+        msg: >-
+          The latest Kata release ({{ kata_release_info.json.tag_name }}) does not contain
+          a `vmlinux.container` asset. Either switch to a release that ships the kernel,
+          or build / copy your own kernel into /opt/kata/share/kata-containers/.
+      when:
+        - not kata_kernel.stat.exists
+        - kata_kernel_url == ''
+      tags: ['kata']
+
+    - name: Download vmlinux.container (only if kernel missing and asset present)
+      get_url:
+        url: "{{ kata_kernel_url }}"
+        dest: /opt/kata/share/kata-containers/vmlinux.container
+        mode: '0644'
+      when:
+        - not kata_kernel.stat.exists
+        - kata_kernel_url != ''
+      tags: ['kata']
+
+    # - name: Fail if GH_TOKEN is not set
+    #   fail:
+    #     msg: "GH_TOKEN environment variable must be set to access the private GitHub repo."
+    #   when: lookup('env', 'GH_TOKEN') == ""
+    #   tags: ['kata']
+
+    # - name: Ensure GitHub CLI is installed
+    #   apt:
+    #     name: gh
+    #     state: present
+    #     update_cache: yes
+    #   tags: ['kata']
+
+    # - name: Download kata-containers.img from GitHub Release
+    #   shell: |
+    #     gh release download v0.0.1 \
+    #       --repo Katakate/k7 \
+    #       --pattern "kata-containers.img" \
+    #       --dir /opt/kata/share/kata-containers \
+    #       --clobber
+    #   environment:
+    #     GH_TOKEN: "{{ lookup('env', 'GH_TOKEN') }}"
+    #   args:
+    #     creates: /opt/kata/share/kata-containers/kata-containers.img
+    #   tags: ['kata']
+
+    - name: Ensure kernel path is configured in configuration-fc.toml
+      lineinfile:
+        path: /opt/kata/share/defaults/kata-containers/configuration-fc.toml
+        regexp: '^#?\s*kernel\s*='
+        line: 'kernel = "/opt/kata/share/kata-containers/vmlinux.container"'
+        backrefs: yes
+      tags: ['kata']
+
+    - name: Ensure image path is configured in configuration-fc.toml
+      lineinfile:
+        path: /opt/kata/share/defaults/kata-containers/configuration-fc.toml
+        regexp: '^#?\s*image\s*='
+        line: 'image = "/opt/kata/share/kata-containers/kata-containers.img"'
+        backrefs: yes
+      tags: ['kata']
+
+
+    - name: Ensure containerd template directory exists
+      file:
+        path: /var/lib/rancher/k3s/agent/etc/containerd
+        state: directory
+        mode: '0755'
+      tags: ['kata', 'devmapper']
+
+    # ──── BEGIN: spare-disk check ────
+    - name: Detect root disk device
+      set_fact:
+        root_disk: "{{ (ansible_mounts | selectattr('mount', 'equalto', '/') | first).device
+                      | regex_replace('p?[0-9]+$','') }}"
+      tags: ['lvm']
+
+    - name: Find an empty secondary disk (skip loop, mapper, CD-ROM, zram, etc.)
+      set_fact:
+        kata_block: >-
+          {{
+            ansible_devices
+            | dict2items
+            | selectattr('value.partitions', 'equalto', {})
+            | selectattr('value.removable', 'equalto', '0')
+            | selectattr('value.size', 'defined')
+            | rejectattr('value.size', 'equalto', '0 bytes')
+            | selectattr('value.host', 'defined')
+            | rejectattr('value.host', 'equalto', '')
+            | rejectattr('key', 'match', root_disk | basename)
+            | rejectattr('key', 'search', '^(dm-|mapper/|loop|sr|zram|zd)[0-9]+$')
+            | map(attribute='key')
+            | map('regex_replace', '^', '/dev/')
+            | first | default('')
+          }}
+      tags: ['lvm']
+
+
+
+    - name: Fail if no spare block device is available
+      fail:
+        msg: |
+          No empty secondary disk found.  
+          K7 expects a dedicated data drive for the LVM thin-pool.
+          Attach an extra NVMe/SSD (e.g. /dev/nvme2n1) and re-run the playbook.
+      when: kata_block == ''
+      tags: ['lvm']
+    # ──── END spare-disk check ────
+
+
+    - name: Ensure kata-vg exists
+      command: vgdisplay kata-vg
+      register: vgcheck
+      failed_when: false
+      changed_when: false
+      tags: ['lvm']
+
+    - name: pvcreate (with label)
+      command: pvcreate -y --setphysicalvolumesize 100G --metadatasize 4M --dataalignment 1M {{ kata_block }}
+      when: vgcheck.rc != 0
+      tags: ['lvm']
+
+    - name: Create VG if missing
+      command: vgcreate kata-vg {{ kata_block }}
+      when: vgcheck.rc != 0
+      tags: ['lvm']
+
+    - name: Add k7 tag to PV
+      command: pvchange --addtag k7 {{ kata_block }}
+      when: vgcheck.rc != 0
+      tags: ['lvm']
+
+    - name: Ensure thin pool LV exists
+      command: >
+        lvcreate -T kata-vg/thin-pool
+                 -l 95%FREE
+                 --poolmetadatasize 1G
+                 --chunksize 512K
+                 --yes
+      args:
+        creates: /dev/kata-vg/thin-pool
+      tags: ['lvm']
+
+    # – create the VG sub-folder so containerd can write its BoltDB
+    - name: Create devmapper VG subdir
+      file:
+        path: /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.devmapper/kata-vg
+       #path: /var/lib/containerd/io.containerd.snapshotter.v1.devmapper/kata-vg
+        state: directory
+        mode: '0755'
+      tags: ['devmapper', 'lvm']
+
+    - name: Enable LVM thin-pool autoextend service
+      copy:
+        dest: /etc/lvm/profile/kata-thin.profile
+        content: |
+          activation {
+              thin_pool_autoextend_threshold=80
+              thin_pool_autoextend_percent=20
+          }
+      tags: ['lvm']
+
+    - name: Attach profile to thin pool
+      command: lvchange --metadataprofile kata-thin kata-vg/thin-pool
+      tags: ['lvm']
+
+
+    - name: Ensure skeleton containerd template exists (only once)
+      copy: 
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+        content: |
+          version = 3
+        force: no         # do NOT overwrite if it is already there
+        mode: '0644'
+      tags: ['containerd']
+    
+    - name: Write basic config-v3.toml.tmpl with devmapper only
+      copy:
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+        mode: "0644"
+        owner: root
+        content: |
+          # version = 3
+          {{ '{{' }} template "base" . {{ '}}' }}
+      
+          [plugins."io.containerd.snapshotter.v1.devmapper"]
+            pool_name       = "kata--vg-thin--pool"
+            root_path       = "/var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.devmapper"
+            base_image_size = "10GB"
+        
+    - name: Add Kata runtime configuration to containerd template
+      blockinfile:
+        path: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+        marker: "# {mark} ANSIBLE MANAGED KATA RUNTIME"
+        block: |
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.kata]
+            runtime_type  = "io.containerd.kata.v2"
+            privileged_without_host_devices = true
+            snapshotter   = "devmapper"
+            [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.kata.options]
+              BinaryName  = "/usr/local/bin/containerd-shim-kata-v2"
+              ConfigPath  = "/opt/kata/share/defaults/kata-containers/configuration-fc.toml"
+        create: no
+        insertafter: EOF
+      tags: ['kata', 'containerd']
+
+
+    # ── restart k3s non-blocking and wait for the API ─────────────────────────────
+    - name: Restart K3s to apply devmapper changes (async)
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+      async: 300           # allow up to 5 min
+      poll: 0              # fire-and-forget
+      register: k3s_async
+      tags: ['devmapper']
+
+    - name: Wait for K3s containerd socket to appear
+      wait_for:
+        path: /run/k3s/containerd/containerd.sock
+        state: present
+        timeout: 60
+      tags: ['kata']
+
+    - name: Wait for kube-api /readyz
+      command: k3s kubectl get --raw /readyz
+      register: readyz
+      retries: 30
+      delay: 5
+      until: readyz.rc == 0
+
+    - name: Wait for node to be Ready and API stable
+      shell: |
+        for i in {1..30}; do
+          if k3s kubectl get nodes --no-headers | grep -q 'Ready'; then
+            echo "Node is Ready"
+            # Test a more complex query to ensure stability
+            if k3s kubectl get pods -n kube-system >/dev/null 2>&1; then
+              exit 0
+            fi
+          fi
+          echo "Waiting for node and API stability... ($i/30)"
+          sleep 10
+        done
+        exit 1
+      register: stability_check
+      until: stability_check.rc == 0
+      retries: 1  # The loop inside handles retries
+      delay: 0
+      tags: ['k3s']
+
+
+    - name: Create RuntimeClass 'kata'
+      ansible.builtin.shell: |
+        cat <<'EOF' | k3s kubectl apply -f -
+        apiVersion: node.k8s.io/v1
+        kind: RuntimeClass
+        metadata:
+          name: kata
+        handler: kata
+        EOF
+      args:
+        executable: /bin/bash
+      register: apply_kata
+      retries: 12
+      delay: 5
+      until: "'created' in apply_kata.stdout or 'unchanged' in apply_kata.stdout"
+      tags: ['kata','k3s']
+
+
+    - name: Show K3s node status
+      command: k3s kubectl get nodes -o wide
+      register: k3s_nodes
+      changed_when: false
+      tags: ['k3s']
+
+    - name: Debug K3s node status
+      debug:
+        msg: "{{ k3s_nodes.stdout_lines }}"
+      tags: ['k3s']
+    
+    # - name: Download Helm installation script
+    #   get_url:
+    #     url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    #     dest: /tmp/get_helm_3
+    #     mode: '0755'
+    #   tags: ['helm']
+
+    # - name: Install Helm using script
+    #   command: /tmp/get_helm_3 --version {{ helm_version }}
+    #   args:
+    #     creates: /usr/local/bin/helm
+    #   environment:
+    #     USE_SUDO: "false"
+    #     HELM_INSTALL_DIR: /usr/local/bin
+    #   changed_when: "'Helm is already installed' not in helm_install_result.stdout"
+    #   register: helm_install_result
+    #   tags: ['helm']
+
+    - name: Reminder about logging out and back in for group changes
+      debug:
+        msg: "IMPORTANT: User '{{ target_user }}' was added to 'docker' and/or 'kvm' groups. You (or the user) will need to log out and log back in on the server for these group changes to take full effect in their shell sessions."
+      tags: ['info']
+
+
+  handlers:
+    - name: Load xt_mark
+      ansible.builtin.command: modprobe xt_mark
+

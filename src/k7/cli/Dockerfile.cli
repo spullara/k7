@@ -1,0 +1,21 @@
+FROM --platform=linux/amd64 ubuntu:24.04
+RUN apt-get update && apt-get install -y python3 python3-pip python3-venv gcc patchelf
+
+WORKDIR /app
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+RUN pip install --no-cache-dir nuitka typer kubernetes python-dotenv pyyaml rich
+
+# Copy source package into build context (src layout)
+COPY src/k7/ /app/k7/
+
+# Build the binary with deploy assets embedded
+RUN python3 -m nuitka \
+    --standalone --onefile \
+    --include-module=yaml \
+    --include-module=rich \
+    --include-module=typer \
+    --include-module=kubernetes \
+    --include-module=dotenv \
+    --include-data-dir=k7=k7 \
+    k7/cli/k7.py

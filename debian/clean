@@ -1,0 +1,6 @@
+dist/
+build/
+.nuitka-cache/
+*.build
+*.dist
+
