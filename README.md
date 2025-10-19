@@ -25,9 +25,9 @@
 </p>
 
 <p align="center">
-  <!-- <a href="https://deepwiki.com/Katakate/k7">
+  <a href="https://deepwiki.com/Katakate/k7">
     <img src="https://deepwiki.com/badge.svg" />
-  </a> -->
+  </a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img src="https://img.shields.io/badge/install%20with-apt-blue?logo=debian">
   <img src="https://img.shields.io/pypi/v/katakate">
