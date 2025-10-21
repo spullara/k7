@@ -18,6 +18,13 @@
 </p>
 
 
+<p align="center">
+  <a href="https://news.ycombinator.com/item?id=45656952">
+    <img src="https://img.shields.io/badge/Show%20HN-%231%20🔥-orange" alt="Show HN #1 Badge">
+  </a>
+  <a href="assets/show-hn_nb1_post-id-45656952.png">📸</a>
+</p>
+
 
 <p align="center">
   <img src="assets/k7-cover-upgrade.png" alt="Katakate Logo" width="3600" style="vertical-align: middle;"/>
