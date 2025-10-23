@@ -85,6 +85,8 @@ Coming Soon
 - 🔍 Cilium FQDN-based DNS resolution to safely whitelist domains, not just IP blocks
 - ⚙️ Support other VMM such as Qemu for GPU workloads
 
+📋 **See [ROADMAP.md](ROADMAP.md) for the complete feature roadmap and project priorities.**
+
 
 <p align="left" style="margin-top: 40px;  font-size: 14px;">
    <strong>Note:</strong> Katakate is currently in <em>beta</em> and under security review. Use with caution for highly sensitive workloads.
