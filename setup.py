@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="katakate",
-    version="0.0.3",
+    version="0.0.4-dev",
     description="Katakate Sandbox Management Python SDK",
     packages=find_packages(where="src", include=["katakate", "katakate.*"]),
     package_dir={"": "src"},
