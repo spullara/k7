@@ -6,6 +6,9 @@ We chose a lean and minimal approach to make development on this project as simp
 - Infra is handled by a single Ansible playbook
 - The CLI and API are implemented respectively with Typer and FastAPI in Python, for simplicity. They both wrap over the same `core` module. 
 
+## Project Direction
+
+Check out the [ROADMAP.md](ROADMAP.md) to see planned features, current priorities, and long-term goals. It's a great starting point if you're looking for areas to contribute!
 
 ## Repo Layout
 - `src/k7/` CLI, core logic, API server

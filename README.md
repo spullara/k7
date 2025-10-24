@@ -20,9 +20,16 @@
 
 <p align="center">
   <a href="https://news.ycombinator.com/item?id=45656952">
-    <img src="https://img.shields.io/badge/Show%20HN-%231%20🔥-orange" alt="Show HN #1 Badge">
+    <img src="https://img.shields.io/badge/Show%20HN-%231%20🔥-orange" alt="Show HN #1">
   </a>
-  <a href="assets/show-hn_nb1_post-id-45656952.png">📸</a>
+  <a href="assets/show-hn_nb1_post-id-45656952.png" title="Screenshot proof">📸</a>
+  <a href="https://console.dev">
+    <img src="https://img.shields.io/badge/Featured%20on-Console.dev-blue" alt="Featured on Console.dev">
+  </a>
+  <a href="assets/k7-console-dev.png" title="Screenshot proof">📸</a>
+  <a href="https://www.youtube.com/watch?v=2tgqzZvmbak">
+    <img src="https://img.shields.io/badge/GitHub%20Trending-Oct%2023%2C%202025-black?logo=github" alt="GitHub Trending (Oct 23, 2025)">
+  </a>
 </p>
 
 
@@ -78,6 +85,8 @@ Coming Soon
 - 🔍 Cilium FQDN-based DNS resolution to safely whitelist domains, not just IP blocks
 - ⚙️ Support other VMM such as Qemu for GPU workloads
 
+📋 **See [ROADMAP.md](ROADMAP.md) for the complete feature roadmap and project priorities.**
+
 
 <p align="left" style="margin-top: 40px;  font-size: 14px;">
    <strong>Note:</strong> Katakate is currently in <em>beta</em> and under security review. Use with caution for highly sensitive workloads.
@@ -109,6 +118,7 @@ We provide a:
     - AWS: only `.metal` EC2 instances. 
     - GCP: virtualization friendly, most instances, with `--enable-nested-virtualization` flag.
     - Azure: Dv3, Ev3, Dv4, Ev4, Dv5, Ev5. Must be Intel/AMD x86, not ARM.
+    - DigitalOcean: Premium Intel and AMD droplets with nested virtualization enabled.
     - Others: in general, hardware virtualization is not exposed on cloud VPS, so you'll likely want a dedicated / bare metal.
 - One raw disk (unformatted, unpartitioned) for the thin-pool that k7 will provision for efficient disk usage of sandboxes.
   - Use `./utils/wipe-disk.sh /your/disk` to wipe a disk clean before provisioning. DANGER: destructive - it will remove data/partitions/formatting/SWRAID.
